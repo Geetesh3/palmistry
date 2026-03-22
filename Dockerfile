@@ -16,12 +16,21 @@ RUN apt-get update && apt-get install -y \
 # Set the working directory
 WORKDIR /app
 
-# Copy and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Create a non-root user for security and pip compliance
+RUN useradd -m astroai_user
+USER astroai_user
+
+# Ensure user's local bin is in PATH
+ENV PATH="/home/astroai_user/.local/bin:${PATH}"
+
+# Copy dependencies first for caching
+COPY --chown=astroai_user:astroai_user requirements.txt .
+
+# Install dependencies into user space
+RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY --chown=astroai_user:astroai_user . .
 
 # Expose port
 EXPOSE 8000
