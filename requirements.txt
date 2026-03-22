@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+opencv-python-headless
+mediapipe
+numpy
+python-multipart
+pydantic
+python-dotenv
+httpx
+gunicorn
