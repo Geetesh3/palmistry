@@ -5,4 +5,4 @@ werkzeug
 gunicorn
 requests
 google-generativeai
-mediapipe
+scikit-image

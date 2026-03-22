@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 from skimage.filters import frangi
 import random
+import hashlib
 
 # --- CONFIGURATION ---
 ASTRO_API_KEY = os.getenv("ASTRO_API_KEY", "aa90edcede5379a85560b5db44a773ab0745acd05c734c31a23cdef997e9690e")
@@ -25,85 +26,75 @@ PROCESSED_FOLDER = 'static/processed'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
-def get_gabor_filters():
-    """Knowledge: Creates a bank of filters to catch lines at all angles."""
-    filters = []
-    ksize = 31
-    for theta in np.arange(0, np.pi, np.pi / 12): # 12 orientations
-        kern = cv2.getGaborKernel((ksize, ksize), 4.0, theta, 10.0, 0.5, 0, ktype=cv2.CV_32F)
-        filters.append(kern)
-    return filters
-
-def process_gabor(img, filters):
-    """Knowledge: Applies the filter bank and takes the maximum response."""
-    accum = np.zeros_like(img)
-    for kern in filters:
-        fimg = cv2.filter2D(img, cv2.CV_8U, kern)
-        np.maximum(accum, fimg, accum)
-    return accum
-
-def process_perfect_xray(image_path):
+def process_biometric_xray(image_path):
     img = cv2.imread(image_path)
     if img is None: return None, 0, {}
     
-    # 1. Extreme Noise Reduction (Non-Local Means)
-    # This is better than Bilateral for preserving biometric textures
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     denoised = cv2.fastNlMeansDenoising(gray, h=10)
-    
-    # 2. Localized Contrast Enhancement
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
     enhanced = clahe.apply(denoised)
     
-    # 3. Gabor Filter Bank (Multi-directional line grabbing)
-    filters = get_gabor_filters()
-    gabor_output = process_gabor(enhanced, filters)
-    
-    # 4. Frangi Filter (Tubular structure validation)
-    frangi_img = frangi(enhanced, sigmas=range(1, 8, 2), black_ridges=True)
+    # 1. Advanced Ridge Extraction
+    frangi_img = frangi(enhanced, sigmas=range(1, 10, 2), black_ridges=True)
     frangi_norm = cv2.normalize(frangi_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # 5. Blend Gabor (Detail) and Frangi (Structure)
-    # This results in the clearest lines ever
-    combined_lines = cv2.addWeighted(gabor_output, 0.5, frangi_norm, 0.5, 0)
+    # 2. Differentiate Strong vs Weak Lines
+    # Strong: High probability Frangi response
+    # Weak: Lower probability Frangi response
+    _, strong_mask = cv2.threshold(frangi_norm, 160, 255, cv2.THRESH_BINARY)
+    _, weak_mask = cv2.threshold(frangi_norm, 60, 160, cv2.THRESH_BINARY)
     
-    # 6. Hand Masking (Background cleanup)
-    _, mask = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    mask = cv2.dilate(mask, np.ones((5,5), np.uint8), iterations=2)
+    # 3. Calculate Biometrics
+    strong_count = int(np.sum(strong_mask > 0) / 1000) + 5
+    weak_count = int(np.sum(weak_mask > 0) / 1000) + 10
+    total_lines = strong_count + weak_count
     
-    # 7. Final Ultra-HD Composition
-    # Dark Gray skin base
-    skin_base = np.full(gray.shape, 200, dtype=np.uint8) 
-    # Subtract combined lines to make them blacker than skin
-    final_gray = cv2.subtract(skin_base, combined_lines)
+    line_depth = round(float(np.mean(frangi_norm[frangi_norm > 50]) / 25.5), 1) # 1-10 scale
+    consistency = random.randint(92, 99)
     
-    # Final Result with perfect black background
-    final_hq = np.zeros_like(final_gray)
-    final_hq = cv2.bitwise_and(final_gray, final_gray, mask=mask)
+    # Generate Unique Biometric ID for this hand
+    bio_id = hashlib.md5(frangi_norm.tobytes()).hexdigest()[:10].upper()
     
-    xray_name = "perfect_xray_" + os.path.basename(image_path)
-    save_path = os.path.join(PROCESSED_FOLDER, xray_name)
-    cv2.imwrite(save_path, final_hq)
+    # 4. Professional Rendering
+    skin_base = np.full(gray.shape, 210, dtype=np.uint8) 
+    final_gray = cv2.subtract(skin_base, frangi_norm)
+    _, hand_mask = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    final_hq = cv2.bitwise_and(final_gray, final_gray, mask=hand_mask)
     
-    # 8. High-Precision Metrics
-    line_density = float(np.sum(combined_lines > 100) / np.sum(mask > 0))
-    line_count = int(line_density * 500) + 10
+    xray_name = f"bio_xray_{os.path.basename(image_path)}"
+    cv2.imwrite(os.path.join(PROCESSED_FOLDER, xray_name), final_hq)
     
     metrics = {
-        "curvature": round(float(np.mean(combined_lines[combined_lines > 0]) / 255.0), 3),
-        "density": round(line_density, 4),
-        "pattern": "High-Res Neural Ridge"
+        "strong_lines": strong_count,
+        "weak_lines": weak_count,
+        "depth_index": line_depth,
+        "consistency": consistency,
+        "biometric_id": bio_id,
+        "curvature": round(random.uniform(0.7, 0.9), 2)
     }
     
-    return f"static/processed/{xray_name}", line_count, metrics
+    return f"static/processed/{xray_name}", total_lines, metrics
+
+def get_palm_mapping(metrics):
+    # Mapping based on biometric data
+    is_energetic = metrics['strong_lines'] > 10
+    is_logical = metrics['curvature'] > 0.8
+    
+    mapping = {
+        "life": {"feature": "Strong" if is_energetic else "Calm", "insight": "High vitality detected. Take initiative today." if is_energetic else "Take time for self-care and rest."},
+        "head": {"feature": "Deep" if is_logical else "Creative", "insight": "Perfect day for logical planning." if is_logical else "Trust your intuition and creative flow."},
+        "heart": {"feature": "Stable", "insight": "Emotional harmony is favored by your current matrix."},
+        "fate": {"feature": "Developing", "insight": "Stay focused on your core goals for maximum growth."},
+        "sun": {"feature": "Visible", "insight": "Recognition for your efforts is on the horizon."},
+        "mercury": {"feature": "Clear", "insight": "Effective communication will open new doors."},
+        "combined_result": "Biometric synergy indicates a day of high productivity and clarity."
+    }
+    return mapping
 
 @app.route('/')
 def status():
-    return jsonify({"engine": "AstroAI Global Training", "vision": "Perfect-Gabor 4.0", "status": "online"})
-
-@app.route('/static/processed/<path:filename>')
-def serve_processed(filename):
-    return send_from_directory(PROCESSED_FOLDER, filename)
+    return jsonify({"engine": "AstroAI Biometric Mapping", "status": "online"})
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -112,24 +103,26 @@ def analyze():
     fpath = os.path.join(UPLOAD_FOLDER, secure_filename(file.filename))
     file.save(fpath)
     
-    url_path, line_count, metrics = process_perfect_xray(fpath)
-    score = 92 + (line_count % 8)
+    url_path, total_lines, metrics = process_biometric_xray(fpath)
+    mapping = get_palm_mapping(metrics)
     
     if model:
-        prompt = (f"Analyze palm metrics: Density {metrics['density']}, Curvature {metrics['curvature']}. "
-                  f"Provide a 2-sentence highly accurate life reading.")
-        try: ai_msg = model.generate_content(prompt).text
-        except: ai_msg = "Your life matrix indicates deep wisdom and exceptional creative potential."
-    else: ai_msg = "Your life matrix indicates deep wisdom and exceptional creative potential."
+        try:
+            p = f"Act as a Master Palmist. Biometrics: {total_lines} lines, {metrics['depth_index']} depth. Provide a 2-sentence divine daily summary."
+            mapping['combined_result'] = model.generate_content(p).text
+        except: pass
 
     return jsonify({
-        "line_count": line_count,
-        "destiny_score": score,
+        "line_count": total_lines,
+        "destiny_score": 90 + (total_lines % 10),
         "xray_url": f"https://palmistry-fk4f.onrender.com/{url_path}",
-        "ai_prediction": ai_msg,
-        "metrics": metrics
+        "metrics": metrics,
+        "palm_mapping": mapping
     })
 
+@app.route('/static/processed/<path:filename>')
+def serve_processed(filename):
+    return send_from_directory(PROCESSED_FOLDER, filename)
+
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
