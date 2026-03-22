@@ -15,7 +15,8 @@ import requests
 # --- CONFIGURATION & API KEYS ---
 # Your provided Astro API Key
 ASTRO_API_KEY = os.getenv("ASTRO_API_KEY", "aa90edcede5379a85560b5db44a773ab0745acd05c734c31a23cdef997e9690e")
-GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY", "YOUR_GOOGLE_AI_KEY_HERE")
+# Your provided Gemini API Key
+GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY", "AIzaSyA6JLdZhXTV89tLY4z39d2jNvN2iqK4sgI")
 
 # Configure Gemini AI (The Global Intelligence)
 if GOOGLE_AI_KEY != "YOUR_GOOGLE_AI_KEY_HERE":
