@@ -2,27 +2,29 @@
 FROM python:3.11-slim
 
 # Install system dependencies for OpenCV and MediaPipe
+# libgl1 is the modern replacement for libgl1-mesa-glx
 RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libgles2 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory in the container
+# Set the working directory
 WORKDIR /app
 
-# Copy the requirements file into the container
+# Copy and install dependencies
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
+# Copy application code
 COPY . .
 
-# Expose the port the app runs on
+# Expose port
 EXPOSE 8000
 
-# Command to run the application
+# Start command
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
