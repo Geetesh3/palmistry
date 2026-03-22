@@ -6,6 +6,7 @@ import time
 import google.generativeai as genai
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
+from skimage.filters import frangi
 import random
 
 # --- CONFIGURATION ---
@@ -21,80 +22,84 @@ else:
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 PROCESSED_FOLDER = 'static/processed'
-TRAIN_FOLDER = 'static/training_assets'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
-os.makedirs(TRAIN_FOLDER, exist_ok=True)
 
-def process_high_quality_xray(image_path):
+def get_gabor_filters():
+    """Knowledge: Creates a bank of filters to catch lines at all angles."""
+    filters = []
+    ksize = 31
+    for theta in np.arange(0, np.pi, np.pi / 12): # 12 orientations
+        kern = cv2.getGaborKernel((ksize, ksize), 4.0, theta, 10.0, 0.5, 0, ktype=cv2.CV_32F)
+        filters.append(kern)
+    return filters
+
+def process_gabor(img, filters):
+    """Knowledge: Applies the filter bank and takes the maximum response."""
+    accum = np.zeros_like(img)
+    for kern in filters:
+        fimg = cv2.filter2D(img, cv2.CV_8U, kern)
+        np.maximum(accum, fimg, accum)
+    return accum
+
+def process_perfect_xray(image_path):
     img = cv2.imread(image_path)
     if img is None: return None, 0, {}
     
-    # 1. High-Def Pre-processing
+    # 1. Extreme Noise Reduction (Non-Local Means)
+    # This is better than Bilateral for preserving biometric textures
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    denoised = cv2.fastNlMeansDenoising(gray, h=10)
     
-    # Use CLAHE (Contrast Limited Adaptive Histogram Equalization) for localized detail
-    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
-    enhanced_gray = clahe.apply(gray)
+    # 2. Localized Contrast Enhancement
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(denoised)
     
-    # 2. Ridge Detection (Black Top Hat)
-    # This highlights the "valleys" (lines) in the palm texture
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-    blackhat = cv2.morphologyEx(enhanced_gray, cv2.MORPH_BLACKHAT, kernel)
+    # 3. Gabor Filter Bank (Multi-directional line grabbing)
+    filters = get_gabor_filters()
+    gabor_output = process_gabor(enhanced, filters)
     
-    # 3. Clean and Threshold
-    _, thresh = cv2.threshold(blackhat, 15, 255, cv2.THRESH_BINARY)
-    denoised = cv2.medianBlur(thresh, 3)
+    # 4. Frangi Filter (Tubular structure validation)
+    frangi_img = frangi(enhanced, sigmas=range(1, 8, 2), black_ridges=True)
+    frangi_norm = cv2.normalize(frangi_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # 4. Extract main structural lines using Canny on the denoised original
-    v = np.median(enhanced_gray)
-    lower = int(max(0, (1.0 - 0.33) * v))
-    upper = int(min(255, (1.0 + 0.33) * v))
-    edges = cv2.Canny(enhanced_gray, lower, upper)
+    # 5. Blend Gabor (Detail) and Frangi (Structure)
+    # This results in the clearest lines ever
+    combined_lines = cv2.addWeighted(gabor_output, 0.5, frangi_norm, 0.5, 0)
     
-    # 5. Combine Ridge details with Structural edges
-    combined = cv2.addWeighted(denoised, 0.6, edges, 0.4, 0)
+    # 6. Hand Masking (Background cleanup)
+    _, mask = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = cv2.dilate(mask, np.ones((5,5), np.uint8), iterations=2)
     
-    # 6. High-Quality X-ray Rendering (Glow Effect)
-    # Create a dark cosmic background
-    h, w = img.shape[:2]
-    canvas = np.zeros((h, w, 3), dtype=np.uint8)
-    canvas[:] = (46, 26, 26) # Dark Blue #1A1A2E
+    # 7. Final Ultra-HD Composition
+    # Dark Gray skin base
+    skin_base = np.full(gray.shape, 200, dtype=np.uint8) 
+    # Subtract combined lines to make them blacker than skin
+    final_gray = cv2.subtract(skin_base, combined_lines)
     
-    # Make lines GLOW Cyan
-    # Layer 1: The thin sharp lines
-    cyan_lines = np.zeros_like(canvas)
-    cyan_lines[combined > 0] = (255, 255, 0) # Cyan [B,G,R]
+    # Final Result with perfect black background
+    final_hq = np.zeros_like(final_gray)
+    final_hq = cv2.bitwise_and(final_gray, final_gray, mask=mask)
     
-    # Layer 2: A blurred "glow" version of the lines
-    glow = cv2.GaussianBlur(cyan_lines, (15, 15), 0)
-    
-    # Merge layers
-    final_xray = cv2.addWeighted(canvas, 1.0, glow, 0.5, 0)
-    final_xray = cv2.addWeighted(final_xray, 1.0, cyan_lines, 1.0, 0)
-    
-    xray_name = "hq_xray_" + os.path.basename(image_path)
+    xray_name = "perfect_xray_" + os.path.basename(image_path)
     save_path = os.path.join(PROCESSED_FOLDER, xray_name)
-    cv2.imwrite(save_path, final_xray)
+    cv2.imwrite(save_path, final_hq)
     
-    # 7. Knowledge Extraction
-    line_count = int(np.sum(combined > 0) / 1000) + 15
+    # 8. High-Precision Metrics
+    line_density = float(np.sum(combined_lines > 100) / np.sum(mask > 0))
+    line_count = int(line_density * 500) + 10
+    
     metrics = {
-        "curvature": round(random.uniform(0.75, 0.92), 2),
-        "consistency": random.randint(92, 99),
-        "pattern": random.choice(["Divine Flow", "Sacred Geometry", "Infinite Arch"])
+        "curvature": round(float(np.mean(combined_lines[combined_lines > 0]) / 255.0), 3),
+        "density": round(line_density, 4),
+        "pattern": "High-Res Neural Ridge"
     }
     
     return f"static/processed/{xray_name}", line_count, metrics
 
 @app.route('/')
 def status():
-    return jsonify({
-        "engine": "AstroAI Global Training",
-        "keys_active": {"astro": True, "gemini": model is not None},
-        "model": "MediaPipe Vision 1.0",
-        "status": "online"
-    })
+    return jsonify({"engine": "AstroAI Global Training", "vision": "Perfect-Gabor 4.0", "status": "online"})
 
 @app.route('/static/processed/<path:filename>')
 def serve_processed(filename):
@@ -102,30 +107,25 @@ def serve_processed(filename):
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    if 'image' not in request.files:
-        return jsonify({"error": "No image"}), 400
-    
+    if 'image' not in request.files: return jsonify({"error": "No image"}), 400
     file = request.files['image']
-    fname = secure_filename(file.filename)
-    fpath = os.path.join(UPLOAD_FOLDER, fname)
+    fpath = os.path.join(UPLOAD_FOLDER, secure_filename(file.filename))
     file.save(fpath)
     
-    # Process with High-Quality Pipeline
-    xray_url_path, line_count, metrics = process_high_quality_xray(fpath)
-    score = 88 + (line_count % 12)
+    url_path, line_count, metrics = process_perfect_xray(fpath)
+    score = 92 + (line_count % 8)
     
     if model:
-        prompt = f"Divine Palm Analysis: {line_count} lines, {metrics['curvature']} curvature. Write a mystical life-line reading and a final destiny outcome in 2 short sentences."
+        prompt = (f"Analyze palm metrics: Density {metrics['density']}, Curvature {metrics['curvature']}. "
+                  f"Provide a 2-sentence highly accurate life reading.")
         try: ai_msg = model.generate_content(prompt).text
-        except: ai_msg = "Your life matrix suggests a soul of great depth and an unfolding path of prosperity."
-    else:
-        ai_msg = "Your life matrix suggests a soul of great depth and an unfolding path of prosperity."
+        except: ai_msg = "Your life matrix indicates deep wisdom and exceptional creative potential."
+    else: ai_msg = "Your life matrix indicates deep wisdom and exceptional creative potential."
 
-    base_url = "https://palmistry-fk4f.onrender.com"
     return jsonify({
         "line_count": line_count,
         "destiny_score": score,
-        "xray_url": f"{base_url}/{xray_url_path}",
+        "xray_url": f"https://palmistry-fk4f.onrender.com/{url_path}",
         "ai_prediction": ai_msg,
         "metrics": metrics
     })
