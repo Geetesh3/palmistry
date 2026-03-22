@@ -19,8 +19,19 @@ app = FastAPI()
 origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# Resolve absolute path for model
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(BASE_DIR, 'hand_landmarker.task')
+
+# Auto-download model if missing (Crucial for Render/Cloud)
+if not os.path.exists(model_path):
+    print("Model missing. Downloading celestial weights...")
+    import urllib.request
+    url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+    urllib.request.urlretrieve(url, model_path)
+    print("Download complete.")
+
 # Load MediaPipe Hand Landmarker
-model_path = os.path.join(os.path.dirname(__file__), 'hand_landmarker.task')
 base_options = python.BaseOptions(model_asset_path=model_path)
 options = vision.HandLandmarkerOptions(base_options=base_options, num_hands=1)
 detector = vision.HandLandmarker.create_from_options(options)
