@@ -26,50 +26,72 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 os.makedirs(TRAIN_FOLDER, exist_ok=True)
 
-def auto_train_system(image, base_name):
-    """Knowledge: Simulates Global AI training by augmenting data."""
-    flipped = cv2.flip(image, 1)
-    cv2.imwrite(f"{TRAIN_FOLDER}/flip_{base_name}", flipped)
-    alpha = random.uniform(0.8, 1.5)
-    bright = cv2.convertScaleAbs(image, alpha=alpha, beta=10)
-    cv2.imwrite(f"{TRAIN_FOLDER}/bright_{base_name}", bright)
-
-def process_enhanced_xray(image_path):
+def process_high_quality_xray(image_path):
     img = cv2.imread(image_path)
     if img is None: return None, 0, {}
     
+    # 1. High-Def Pre-processing
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    denoised = cv2.bilateralFilter(gray, 11, 75, 75)
-    thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-    edges = cv2.Canny(denoised, 35, 95)
-    combined = cv2.addWeighted(thresh, 0.3, edges, 0.7, 0)
     
-    background = np.full(img.shape, (46, 26, 26), dtype=np.uint8)
-    mask = combined > 0
-    background[mask] = [255, 255, 0]
+    # Use CLAHE (Contrast Limited Adaptive Histogram Equalization) for localized detail
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
+    enhanced_gray = clahe.apply(gray)
     
-    xray_name = "xray_" + os.path.basename(image_path)
-    cv2.imwrite(os.path.join(PROCESSED_FOLDER, xray_name), background)
+    # 2. Ridge Detection (Black Top Hat)
+    # This highlights the "valleys" (lines) in the palm texture
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+    blackhat = cv2.morphologyEx(enhanced_gray, cv2.MORPH_BLACKHAT, kernel)
     
-    # Trigger Auto-Training
-    auto_train_system(img, os.path.basename(image_path))
+    # 3. Clean and Threshold
+    _, thresh = cv2.threshold(blackhat, 15, 255, cv2.THRESH_BINARY)
+    denoised = cv2.medianBlur(thresh, 3)
     
-    line_count = int(np.sum(combined > 0) / 1500) + 12
+    # 4. Extract main structural lines using Canny on the denoised original
+    v = np.median(enhanced_gray)
+    lower = int(max(0, (1.0 - 0.33) * v))
+    upper = int(min(255, (1.0 + 0.33) * v))
+    edges = cv2.Canny(enhanced_gray, lower, upper)
+    
+    # 5. Combine Ridge details with Structural edges
+    combined = cv2.addWeighted(denoised, 0.6, edges, 0.4, 0)
+    
+    # 6. High-Quality X-ray Rendering (Glow Effect)
+    # Create a dark cosmic background
+    h, w = img.shape[:2]
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    canvas[:] = (46, 26, 26) # Dark Blue #1A1A2E
+    
+    # Make lines GLOW Cyan
+    # Layer 1: The thin sharp lines
+    cyan_lines = np.zeros_like(canvas)
+    cyan_lines[combined > 0] = (255, 255, 0) # Cyan [B,G,R]
+    
+    # Layer 2: A blurred "glow" version of the lines
+    glow = cv2.GaussianBlur(cyan_lines, (15, 15), 0)
+    
+    # Merge layers
+    final_xray = cv2.addWeighted(canvas, 1.0, glow, 0.5, 0)
+    final_xray = cv2.addWeighted(final_xray, 1.0, cyan_lines, 1.0, 0)
+    
+    xray_name = "hq_xray_" + os.path.basename(image_path)
+    save_path = os.path.join(PROCESSED_FOLDER, xray_name)
+    cv2.imwrite(save_path, final_xray)
+    
+    # 7. Knowledge Extraction
+    line_count = int(np.sum(combined > 0) / 1000) + 15
     metrics = {
-        "curvature": round(random.uniform(0.7, 0.9), 2),
-        "consistency": random.randint(90, 98),
-        "pattern": random.choice(["Radial Loop", "Cosmic Arch", "Divine Path"])
+        "curvature": round(random.uniform(0.75, 0.92), 2),
+        "consistency": random.randint(92, 99),
+        "pattern": random.choice(["Divine Flow", "Sacred Geometry", "Infinite Arch"])
     }
+    
     return f"static/processed/{xray_name}", line_count, metrics
 
 @app.route('/')
 def status():
     return jsonify({
         "engine": "AstroAI Global Training",
-        "keys_active": {
-            "astro": True,
-            "gemini": model is not None
-        },
+        "keys_active": {"astro": True, "gemini": model is not None},
         "model": "MediaPipe Vision 1.0",
         "status": "online"
     })
@@ -88,38 +110,25 @@ def analyze():
     fpath = os.path.join(UPLOAD_FOLDER, fname)
     file.save(fpath)
     
-    xray_path, line_count, metrics = process_enhanced_xray(fpath)
-    score = 85 + (line_count % 15)
+    # Process with High-Quality Pipeline
+    xray_url_path, line_count, metrics = process_high_quality_xray(fpath)
+    score = 88 + (line_count % 12)
     
     if model:
-        prompt = f"Act as a divine palm reader. Analysis shows {line_count} lines. Destiny score is {score}. Provide a mystical prediction in 2 sentences."
+        prompt = f"Divine Palm Analysis: {line_count} lines, {metrics['curvature']} curvature. Write a mystical life-line reading and a final destiny outcome in 2 short sentences."
         try: ai_msg = model.generate_content(prompt).text
-        except: ai_msg = "Your life matrix indicates a surge of creative energy."
+        except: ai_msg = "Your life matrix suggests a soul of great depth and an unfolding path of prosperity."
     else:
-        ai_msg = "Your life matrix indicates a surge of creative energy."
+        ai_msg = "Your life matrix suggests a soul of great depth and an unfolding path of prosperity."
 
     base_url = "https://palmistry-fk4f.onrender.com"
     return jsonify({
         "line_count": line_count,
         "destiny_score": score,
-        "xray_url": f"{base_url}/{xray_path}",
+        "xray_url": f"{base_url}/{xray_url_path}",
         "ai_prediction": ai_msg,
         "metrics": metrics
     })
-
-@app.route('/generate_kundli', methods=['POST'])
-def generate_kundli():
-    return jsonify({
-        "SUN": "Aries (1st House)",
-        "MOON": "Gemini (3rd House)",
-        "JUPITER": "Leo (5th House)",
-        "MARS": "Scorpio (8th House)",
-        "prediction": "Lord Ganesha's blessings are clearing your path to success."
-    })
-
-@app.route('/sync_offline', methods=['POST'])
-def sync_offline():
-    return jsonify({"status": "success", "synced": len(request.json)})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
