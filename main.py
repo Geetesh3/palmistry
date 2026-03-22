@@ -22,8 +22,7 @@ async def root():
         "endpoints": ["/ping", "/analyze", "/horoscope", "/ai-status"]
     }
 
-# ULTRA-OPEN CORS
-: Required for Android/Capacitor apps to connect to Render
+# ULTRA-OPEN CORS: Required for Android/Capacitor apps to connect to Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -46,7 +45,7 @@ detector = vision.HandLandmarker.create_from_options(
 ASTRO_API_KEY = os.getenv("ASTRO_API_KEY")
 ASTRO_BASE_URL = "https://api.freeastroapi.com/api/v1/"
 
-# --- Endpoints (All Unified) ---
+# --- Endpoints ---
 
 @app.get("/ping")
 async def ping(): return {"status": "connected"}
@@ -77,18 +76,6 @@ async def get_horoscope(req: dict):
         except: pass
     return {"sign": req["sign"], "daily": "Stars are in transition.", "categories": {"love": "Focus on heart.", "career": "Success near.", "health": "Steady."}, "lucky_number": 9, "lucky_color": "Blue", "mood": "Calm"}
 
-@app.post("/kundli")
-async def generate_kundli(req: dict):
-    return {"ascendant": "Leo", "sun_sign": "Aries", "moon_sign": "Taurus", "summary": "Full natal matrix computed."}
-
-@app.post("/numerology")
-async def calculate_numerology(req: dict):
-    return {"life_path": 7, "reading": "The path of self-mastery."}
-
-@app.post("/compatibility")
-async def check_compatibility(req: dict):
-    return {"score": 88, "harmony": "High", "reading": "A deeply soul-aligned bond."}
-
 @app.post("/analyze")
 async def analyze_palm(file: UploadFile = File(...)):
     try:
@@ -98,7 +85,6 @@ async def analyze_palm(file: UploadFile = File(...)):
         res = detector.detect(mp_image)
         if not res.hand_landmarks: return {"has_hand": False, "message": "No biometric lock."}
         
-        # Expert Analysis Logic (Simplified for stability)
         return {
             "has_hand": True, "overall_score": 85, "line_count": 5200, "personality_trait": "Luminous Visionary",
             "processed_image": base64.b64encode(cv2.imencode('.jpg', image)[1]).decode('utf-8'),
@@ -108,4 +94,5 @@ async def analyze_palm(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
