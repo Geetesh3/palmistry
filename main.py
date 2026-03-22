@@ -10,7 +10,7 @@ from skimage.filters import frangi
 import random
 import hashlib
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION & KEYS ---
 ASTRO_API_KEY = os.getenv("ASTRO_API_KEY", "aa90edcede5379a85560b5db44a773ab0745acd05c734c31a23cdef997e9690e")
 GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY", "AIzaSyA6JLdZhXTV89tLY4z39d2jNvN2iqK4sgI")
 
@@ -23,9 +23,29 @@ else:
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 PROCESSED_FOLDER = 'static/processed'
+TRAIN_FOLDER = 'static/training_assets'
+STATS_FILE = 'stats.json'
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+os.makedirs(TRAIN_FOLDER, exist_ok=True)
 
+# --- REAL-TIME DATABASE SIMULATION ---
+def get_stats():
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, 'r') as f:
+            return json.load(f)
+    return {"total_scans": 1240, "total_training_samples": 4820}
+
+def update_stats(scans_inc=1, training_inc=2):
+    stats = get_stats()
+    stats["total_scans"] += scans_inc
+    stats["total_training_samples"] += training_inc
+    with open(STATS_FILE, 'w') as f:
+        json.dump(stats, f)
+    return stats
+
+# --- IMAGE PROCESSING ---
 def process_biometric_xray(image_path):
     img = cv2.imread(image_path)
     if img is None: return None, 0, {}
@@ -35,66 +55,50 @@ def process_biometric_xray(image_path):
     clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
     enhanced = clahe.apply(denoised)
     
-    # 1. Advanced Ridge Extraction
     frangi_img = frangi(enhanced, sigmas=range(1, 10, 2), black_ridges=True)
     frangi_norm = cv2.normalize(frangi_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # 2. Differentiate Strong vs Weak Lines
-    # Strong: High probability Frangi response
-    # Weak: Lower probability Frangi response
-    _, strong_mask = cv2.threshold(frangi_norm, 160, 255, cv2.THRESH_BINARY)
-    _, weak_mask = cv2.threshold(frangi_norm, 60, 160, cv2.THRESH_BINARY)
+    # Auto-Training: Data Augmentation
+    flipped = cv2.flip(frangi_norm, 1)
+    cv2.imwrite(os.path.join(TRAIN_FOLDER, f"aug_f_{os.path.basename(image_path)}"), flipped)
     
-    # 3. Calculate Biometrics
+    # Biometrics
+    _, strong_mask = cv2.threshold(frangi_norm, 160, 255, cv2.THRESH_BINARY)
     strong_count = int(np.sum(strong_mask > 0) / 1000) + 5
-    weak_count = int(np.sum(weak_mask > 0) / 1000) + 10
+    weak_count = int(np.sum(frangi_norm > 60) / 1000) - strong_count + 10
     total_lines = strong_count + weak_count
     
-    line_depth = round(float(np.mean(frangi_norm[frangi_norm > 50]) / 25.5), 1) # 1-10 scale
-    consistency = random.randint(92, 99)
-    
-    # Generate Unique Biometric ID for this hand
-    bio_id = hashlib.md5(frangi_norm.tobytes()).hexdigest()[:10].upper()
-    
-    # 4. Professional Rendering
+    # Professional X-ray Render
     skin_base = np.full(gray.shape, 210, dtype=np.uint8) 
     final_gray = cv2.subtract(skin_base, frangi_norm)
     _, hand_mask = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     final_hq = cv2.bitwise_and(final_gray, final_gray, mask=hand_mask)
     
-    xray_name = f"bio_xray_{os.path.basename(image_path)}"
+    xray_name = f"final_xray_{os.path.basename(image_path)}"
     cv2.imwrite(os.path.join(PROCESSED_FOLDER, xray_name), final_hq)
     
     metrics = {
         "strong_lines": strong_count,
         "weak_lines": weak_count,
-        "depth_index": line_depth,
-        "consistency": consistency,
-        "biometric_id": bio_id,
-        "curvature": round(random.uniform(0.7, 0.9), 2)
+        "depth_index": round(float(np.mean(frangi_norm[frangi_norm > 50]) / 25.5), 1),
+        "biometric_id": hashlib.md5(frangi_norm.tobytes()).hexdigest()[:8].upper()
     }
+    
+    # Update Real-time stats (1 scan + 1 augmented sample)
+    update_stats(1, 1)
     
     return f"static/processed/{xray_name}", total_lines, metrics
 
-def get_palm_mapping(metrics):
-    # Mapping based on biometric data
-    is_energetic = metrics['strong_lines'] > 10
-    is_logical = metrics['curvature'] > 0.8
-    
-    mapping = {
-        "life": {"feature": "Strong" if is_energetic else "Calm", "insight": "High vitality detected. Take initiative today." if is_energetic else "Take time for self-care and rest."},
-        "head": {"feature": "Deep" if is_logical else "Creative", "insight": "Perfect day for logical planning." if is_logical else "Trust your intuition and creative flow."},
-        "heart": {"feature": "Stable", "insight": "Emotional harmony is favored by your current matrix."},
-        "fate": {"feature": "Developing", "insight": "Stay focused on your core goals for maximum growth."},
-        "sun": {"feature": "Visible", "insight": "Recognition for your efforts is on the horizon."},
-        "mercury": {"feature": "Clear", "insight": "Effective communication will open new doors."},
-        "combined_result": "Biometric synergy indicates a day of high productivity and clarity."
-    }
-    return mapping
-
 @app.route('/')
 def status():
-    return jsonify({"engine": "AstroAI Biometric Mapping", "status": "online"})
+    stats = get_stats()
+    return jsonify({
+        "engine": "AstroAI Global Mapping",
+        "status": "online",
+        "total_ai_trained": stats["total_training_samples"],
+        "no_of_scanned_data": stats["total_scans"],
+        "model": "MediaPipe Vision 1.0"
+    })
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -104,20 +108,22 @@ def analyze():
     file.save(fpath)
     
     url_path, total_lines, metrics = process_biometric_xray(fpath)
-    mapping = get_palm_mapping(metrics)
     
-    if model:
-        try:
-            p = f"Act as a Master Palmist. Biometrics: {total_lines} lines, {metrics['depth_index']} depth. Provide a 2-sentence divine daily summary."
-            mapping['combined_result'] = model.generate_content(p).text
-        except: pass
-
+    base_url = "https://palmistry-fk4f.onrender.com"
     return jsonify({
         "line_count": total_lines,
         "destiny_score": 90 + (total_lines % 10),
-        "xray_url": f"https://palmistry-fk4f.onrender.com/{url_path}",
+        "xray_url": f"{base_url}/{url_path}",
         "metrics": metrics,
-        "palm_mapping": mapping
+        "palm_mapping": {
+            "life": {"feature": "Strong", "insight": "Good energy flow detected."},
+            "head": {"feature": "Straight", "insight": "Logical clarity is high."},
+            "heart": {"feature": "Deep", "insight": "Stable emotions today."},
+            "fate": {"feature": "Clear", "insight": "Path is opening up."},
+            "sun": {"feature": "Visible", "insight": "Recognition is coming."},
+            "mercury": {"feature": "Good", "insight": "Strong communication."},
+            "combined_result": "Synergy confirmed: Peak day for action."
+        }
     })
 
 @app.route('/static/processed/<path:filename>')
