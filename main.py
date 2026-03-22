@@ -12,7 +12,7 @@ import random
 ASTRO_API_KEY = os.getenv("ASTRO_API_KEY", "aa90edcede5379a85560b5db44a773ab0745acd05c734c31a23cdef997e9690e")
 GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY", "AIzaSyA6JLdZhXTV89tLY4z39d2jNvN2iqK4sgI")
 
-if GOOGLE_AI_KEY:
+if GOOGLE_AI_KEY and GOOGLE_AI_KEY != "YOUR_GOOGLE_AI_KEY_HERE":
     genai.configure(api_key=GOOGLE_AI_KEY)
     model = genai.GenerativeModel('gemini-pro')
 else:
@@ -21,8 +21,18 @@ else:
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 PROCESSED_FOLDER = 'static/processed'
+TRAIN_FOLDER = 'static/training_assets'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+os.makedirs(TRAIN_FOLDER, exist_ok=True)
+
+def auto_train_system(image, base_name):
+    """Knowledge: Simulates Global AI training by augmenting data."""
+    flipped = cv2.flip(image, 1)
+    cv2.imwrite(f"{TRAIN_FOLDER}/flip_{base_name}", flipped)
+    alpha = random.uniform(0.8, 1.5)
+    bright = cv2.convertScaleAbs(image, alpha=alpha, beta=10)
+    cv2.imwrite(f"{TRAIN_FOLDER}/bright_{base_name}", bright)
 
 def process_enhanced_xray(image_path):
     img = cv2.imread(image_path)
@@ -34,13 +44,15 @@ def process_enhanced_xray(image_path):
     edges = cv2.Canny(denoised, 35, 95)
     combined = cv2.addWeighted(thresh, 0.3, edges, 0.7, 0)
     
-    # Create Glowing Cyan X-ray effect
-    background = np.full(img.shape, (46, 26, 26), dtype=np.uint8) # Dark Blue #1A1A2E
+    background = np.full(img.shape, (46, 26, 26), dtype=np.uint8)
     mask = combined > 0
-    background[mask] = [255, 255, 0] # Cyan [B,G,R]
+    background[mask] = [255, 255, 0]
     
     xray_name = "xray_" + os.path.basename(image_path)
     cv2.imwrite(os.path.join(PROCESSED_FOLDER, xray_name), background)
+    
+    # Trigger Auto-Training
+    auto_train_system(img, os.path.basename(image_path))
     
     line_count = int(np.sum(combined > 0) / 1500) + 12
     metrics = {
@@ -52,7 +64,15 @@ def process_enhanced_xray(image_path):
 
 @app.route('/')
 def status():
-    return jsonify({"engine": "AstroAI", "status": "online"})
+    return jsonify({
+        "engine": "AstroAI Global Training",
+        "keys_active": {
+            "astro": True,
+            "gemini": model is not None
+        },
+        "model": "MediaPipe Vision 1.0",
+        "status": "online"
+    })
 
 @app.route('/static/processed/<path:filename>')
 def serve_processed(filename):
@@ -78,7 +98,6 @@ def analyze():
     else:
         ai_msg = "Your life matrix indicates a surge of creative energy."
 
-    # Use absolute URL for Render
     base_url = "https://palmistry-fk4f.onrender.com"
     return jsonify({
         "line_count": line_count,
@@ -86,6 +105,16 @@ def analyze():
         "xray_url": f"{base_url}/{xray_path}",
         "ai_prediction": ai_msg,
         "metrics": metrics
+    })
+
+@app.route('/generate_kundli', methods=['POST'])
+def generate_kundli():
+    return jsonify({
+        "SUN": "Aries (1st House)",
+        "MOON": "Gemini (3rd House)",
+        "JUPITER": "Leo (5th House)",
+        "MARS": "Scorpio (8th House)",
+        "prediction": "Lord Ganesha's blessings are clearing your path to success."
     })
 
 @app.route('/sync_offline', methods=['POST'])
