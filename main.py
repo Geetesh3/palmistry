@@ -12,11 +12,11 @@ import hashlib
 import requests
 import logging
 
-# --- LOGGING CONFIGURATION ---
+# --- LOGGING ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURATION & KEYS ---
+# --- CONFIGURATION ---
 ASTRO_BASE_URL = "https://api.freeastroapi.com"
 ASTRO_API_KEY = os.getenv("ASTRO_API_KEY", "aa90edcede5379a85560b5db44a773ab0745acd05c734c31a23cdef997e9690e")
 GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY", "AIzaSyA6JLdZhXTV89tLY4z39d2jNvN2iqK4sgI")
@@ -25,109 +25,48 @@ if GOOGLE_AI_KEY and GOOGLE_AI_KEY != "YOUR_GOOGLE_AI_KEY_HERE":
     try:
         genai.configure(api_key=GOOGLE_AI_KEY)
         model = genai.GenerativeModel('gemini-pro')
-    except Exception as e:
-        logger.error(f"Gemini Init Error: {e}")
-        model = None
-else:
-    model = None
+    except: model = None
+else: model = None
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 PROCESSED_FOLDER = 'static/processed'
-TRAIN_DATA_FILE = 'global_training_data.json'
-STATS_FILE = 'stats.json'
-
-# Ensure directories exist (redundant but safe)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
-# --- RECOVERY / FALLBACK DATA ---
-DEFAULT_KUNDLI = {
-    "SUN": "Aries (1st House)", "MOON": "Gemini (3rd House)", 
-    "JUPITER": "Leo (5th House)", "MARS": "Scorpio (8th House)",
-    "prediction": "The celestial alignment favors your journey with success and clarity."
-}
-
-# --- REAL ASTRO API CALLS ---
-
-def get_genuine_horoscope(sign):
-    url = f"{ASTRO_BASE_URL}/daily-sign"
-    params = {"sign": sign.lower(), "lang": "en"}
-    headers = {"x-api-key": ASTRO_API_KEY}
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json().get('data', {}).get('prediction', None)
-    except Exception as e:
-        logger.error(f"Horoscope API Error: {e}")
-    return None
-
-def get_genuine_kundli(user_data):
-    url = f"{ASTRO_BASE_URL}/full-calculate"
-    headers = {"x-api-key": ASTRO_API_KEY, "Content-Type": "application/json"}
-    try:
-        dob_parts = user_data.get('dob', '1990-01-01').split('-')
-        tob_parts = user_data.get('time', '12:00').split(':')
-        payload = {
-            "year": int(dob_parts[0]), "month": int(dob_parts[1]), "date": int(dob_parts[2]),
-            "hours": int(tob_parts[0]), "minutes": int(tob_parts[1]),
-            "latitude": user_data.get('lat', 28.61), "longitude": user_data.get('lon', 77.20),
-            "timezone": 5.5
-        }
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        if response.status_code == 200:
-            planets = response.json().get('data', {}).get('planets', {})
-            if planets:
-                return {
-                    "SUN": planets.get('Sun', {}).get('sign', "Aries"),
-                    "MOON": planets.get('Moon', {}).get('sign', "Gemini"),
-                    "JUPITER": planets.get('Jupiter', {}).get('sign', "Leo"),
-                    "MARS": planets.get('Mars', {}).get('sign', "Scorpio")
-                }
-    except Exception as e:
-        logger.error(f"Kundli API Error: {e}")
-    return None
-
-# --- API ENDPOINTS ---
+def process_hq_xray(image_path):
+    img = cv2.imread(image_path)
+    if img is None: return None, 0, {}
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    denoised = cv2.fastNlMeansDenoising(gray, h=10)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(denoised)
+    frangi_img = frangi(enhanced, sigmas=range(1, 10, 2), black_ridges=True)
+    frangi_norm = cv2.normalize(frangi_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
+    strong_lines = int(np.sum(frangi_norm > 160) / 1000) + 5
+    weak_lines = int(np.sum(frangi_norm > 60) / 1000) + 10
+    line_depth = round(float(np.mean(frangi_norm[frangi_norm > 50]) / 25.5), 1)
+    bio_id = hashlib.md5(frangi_norm.tobytes()).hexdigest()[:10].upper()
+    
+    skin_base = np.full(gray.shape, 210, dtype=np.uint8)
+    final_xray = cv2.subtract(skin_base, frangi_norm)
+    _, mask = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    final_hq = cv2.bitwise_and(final_gray, final_gray, mask=mask) if 'final_gray' in locals() else final_xray
+    final_hq = cv2.bitwise_and(final_hq, final_hq, mask=mask)
+    
+    xray_name = f"hq_xray_{os.path.basename(image_path)}"
+    cv2.imwrite(os.path.join(PROCESSED_FOLDER, xray_name), final_hq)
+    
+    metrics = {"strong_lines": strong_lines, "weak_lines": weak_lines, "depth_index": line_depth, "biometric_id": bio_id}
+    return f"static/processed/{xray_name}", strong_lines + weak_lines, metrics
 
 @app.route('/')
-def status():
-    return jsonify({"engine": "AstroAI", "status": "online", "vision": "Pro-Xray 2.0"})
+def health(): return jsonify({"status": "AstroAI Online"})
 
-@app.route('/get_horoscope', methods=['GET'])
-def get_horoscope():
-    sign = request.args.get('sign', 'Aries').capitalize()
-    prediction = get_genuine_horoscope(sign)
-    
-    if not prediction and model:
-        try:
-            resp = model.generate_content(f"Daily horoscope for {sign} in 2 sentences.")
-            prediction = resp.text
-        except: pass
-    
-    if not prediction:
-        prediction = f"Your celestial path for {sign} is glowing with potential today."
-        
-    return jsonify({
-        "sign": sign, "prediction": prediction,
-        "lucky_number": random.randint(1, 99), "lucky_color": "Gold"
-    })
-
-@app.route('/generate_kundli', methods=['POST'])
-def generate_kundli():
-    data = request.json or {}
-    positions = get_genuine_kundli(data) or {
-        "SUN": "Aries", "MOON": "Gemini", "JUPITER": "Leo", "MARS": "Scorpio"
-    }
-    
-    prediction = "Celestial alignments indicate a period of positive growth."
-    if model:
-        try:
-            p = f"Vedic Master: Sun in {positions['SUN']}, Moon in {positions['MOON']}. 1-sentence prediction."
-            prediction = model.generate_content(p).text
-        except: pass
-
-    return jsonify({**positions, "prediction": prediction})
+@app.route('/static/processed/<path:filename>')
+def serve_processed(filename):
+    return send_from_directory(PROCESSED_FOLDER, filename)
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -137,48 +76,41 @@ def analyze():
     fpath = os.path.join(UPLOAD_FOLDER, fname)
     file.save(fpath)
     
-    try:
-        img = cv2.imread(fpath)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        denoised = cv2.fastNlMeansDenoising(gray, h=10)
-        frangi_img = frangi(denoised, sigmas=range(1, 10, 2), black_ridges=True)
-        frangi_norm = cv2.normalize(frangi_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        
-        xray_name = f"xray_{fname}"
-        cv2.imwrite(os.path.join(PROCESSED_FOLDER, xray_name), cv2.subtract(210, frangi_norm))
-        
-        line_count = int(np.sum(frangi_norm > 50) / 800) + 15
-        metrics = {"strong_lines": 8, "weak_lines": 12, "depth_index": 8.5, "biometric_id": "ABC123XYZ"}
-        
-        ai_msg = "Your life matrix suggests a path of high destiny."
-        if model:
-            try: ai_msg = model.generate_content(f"Palmist: {line_count} lines. 2-sentence divine result.").text
-            except: pass
+    url_path, line_count, metrics = process_hq_xray(fpath)
+    score = 90 + (line_count % 10)
+    
+    ai_msg = "Your life matrix indicates a surge of energy."
+    if model:
+        try:
+            p = f"Act as a professional palm reader. Analysis: {line_count} lines, {metrics['depth_index']} depth. 2-sentence mystical reading."
+            ai_msg = model.generate_content(p).text
+        except: pass
 
-        base_url = "https://palmistry-fk4f.onrender.com"
-        return jsonify({
-            "line_count": line_count,
-            "destiny_score": 95,
-            "xray_url": f"{base_url}/static/processed/{xray_name}",
-            "metrics": metrics,
-            "palm_mapping": {
-                "life": {"feature": "Long", "insight": "Great vitality today."},
-                "head": {"feature": "Straight", "insight": "Focus on planning."},
-                "heart": {"feature": "Stable", "insight": "Emotional harmony."},
-                "fate": {"feature": "Clear", "insight": "Career success."},
-                "sun": {"feature": "Bright", "insight": "Recognition."},
-                "mercury": {"feature": "Good", "insight": "Clear speech."},
-                "combined_result": ai_msg
-            }
-        })
-    except Exception as e:
-        logger.error(f"Analyze Error: {e}")
-        return jsonify({"error": "Internal Processing Error"}), 500
+    base_url = "https://palmistry-fk4f.onrender.com"
+    return jsonify({
+        "line_count": line_count,
+        "destiny_score": score,
+        "xray_url": f"{base_url}/{url_path}",
+        "metrics": metrics,
+        "palm_mapping": {
+            "life": {"feature": "Long & deep", "insight": "Strong energy today."},
+            "head": {"feature": "Straight", "insight": "Good planning day."},
+            "heart": {"feature": "Clear", "insight": "Emotional harmony."},
+            "fate": {"feature": "Strong", "insight": "Career success."},
+            "sun": {"feature": "Visible", "insight": "Recognition coming."},
+            "mercury": {"feature": "Active", "insight": "Clear communication."},
+            "combined_result": ai_msg
+        }
+    })
 
-@app.route('/static/processed/<path:filename>')
-def serve_processed(filename):
-    return send_from_directory(PROCESSED_FOLDER, filename)
+@app.route('/get_horoscope', methods=['GET'])
+def get_horoscope():
+    sign = request.args.get('sign', 'Aries').capitalize()
+    return jsonify({"sign": sign, "prediction": f"The stars align for {sign} today.", "lucky_number": 7, "lucky_color": "Gold"})
+
+@app.route('/generate_kundli', methods=['POST'])
+def generate_kundli():
+    return jsonify({"SUN": "Aries (1st House)", "MOON": "Gemini (3rd House)", "prediction": "Celestial alignments indicate growth."})
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
